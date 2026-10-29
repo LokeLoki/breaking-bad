@@ -183,14 +183,6 @@ function pluck(m,vol,when,dur){ if(!S.ctx||!S.gtr)return;
   const g=C.createGain();env(g,t,vol,.005,dur||1.6);
   src.connect(bp);bp.connect(g);g.connect(S.gtr);
   src.start(t);src.stop(t+(dur||1.6)+.1)}
-function whistle(m,when,dur,vol){ if(!S.ctx)return;
-  const C=S.ctx,t=when,f=m2f(m),o=C.createOscillator(),g=C.createGain(),
-  lfo=C.createOscillator(),lg=C.createGain();
-  o.type='sine';o.frequency.setValueAtTime(f*.93,t);o.frequency.exponentialRampToValueAtTime(f,t+.13);
-  lfo.frequency.value=5.4;lg.gain.value=f*.014;lfo.connect(lg);lg.connect(o.frequency);
-  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+.1);
-  g.gain.setValueAtTime(vol,t+Math.max(.2,dur-.2));g.gain.exponentialRampToValueAtTime(.0001,t+dur);
-  o.connect(g);g.connect(S.master);o.start(t);lfo.start(t);o.stop(t+dur+.05);lfo.stop(t+dur+.05)}
 function pluckG(m,vol,when,dur,key){ // KS string + playbackRate keyframes = real slide (like slide off a fret)
   if(!S.ctx||!S.gtr)return;
   const C=S.ctx,t=when,src=C.createBufferSource();src.buffer=ksBuf(m);
@@ -200,16 +192,46 @@ function pluckG(m,vol,when,dur,key){ // KS string + playbackRate keyframes = rea
   for(const[dt,mm]of key)if(dt>0)src.playbackRate.linearRampToValueAtTime(m2f(mm)/m2f(m),t+dt);
   src.connect(bp);bp.connect(g);g.connect(S.gtr);
   src.start(t);src.stop(t+dur+.1)}
-function legato(m,when,dur,vol){ // bowed-string voice (Heisenberg-theme lament)
-  if(!S.ctx)return;
-  const C=S.ctx,t=when,f=m2f(m),o=C.createOscillator(),lp=C.createBiquadFilter(),g=C.createGain(),
-  lfo=C.createOscillator(),lg=C.createGain();
-  o.type='sawtooth';o.frequency.value=f;
-  lfo.frequency.value=5.6;lg.gain.value=f*.013;lfo.connect(lg);lg.connect(o.frequency);
-  lp.type='lowpass';lp.frequency.value=1900;lp.Q.value=.7;
-  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+.35);
-  g.gain.setValueAtTime(vol,t+Math.max(.3,dur-.45));g.gain.exponentialRampToValueAtTime(.0001,t+dur);
-  o.connect(lp);lp.connect(g);g.connect(S.master);o.start(t);lfo.start(t);o.stop(t+dur+.05);lfo.stop(t+dur+.05)}
+/* bowed-string voice: detuned ensemble + DELAYED vibrato + body formants + bow noise + scoop.
+   (the flute tell was sine+instant vibrato; real strings bite in, then vibrato blooms) */
+function sw(m,when,dur,vol,reg){ // reg: 'cello'|'viola'|'violin'
+  if(!S.ctx)return; const C=S.ctx,t=when,f=m2f(m);
+  const cfg=({cello:{n:3,lp:1150,f1:240,f2:620,vib:16,vt:.55,det:5,att:.5},
+             viola:{n:3,lp:1750,f1:300,f2:900,vib:20,vt:.5,det:6,att:.4},
+             violin:{n:4,lp:2600,f1:360,f2:1150,vib:26,vt:.45,det:7,att:.32}})[reg||'violin'];
+  const body=C.createGain();body.gain.value=1;
+  const lp=C.createBiquadFilter();lp.type='lowpass';lp.frequency.value=cfg.lp;lp.Q.value=.6;
+  const q1=C.createBiquadFilter();q1.type='peaking';q1.frequency.value=cfg.f1;q1.Q.value=1.4;q1.gain.value=6;
+  const q2=C.createBiquadFilter();q2.type='peaking';q2.frequency.value=cfg.f2;q2.Q.value=1.6;q2.gain.value=4.5;
+  lp.connect(q1);q1.connect(q2);q2.connect(body);
+  // vibrato bus (depth ramps in AFTER the note -> string, not flute)
+  const lfo=C.createOscillator();lfo.type='sine';lfo.frequency.value=5.3;
+  const dep=C.createGain();dep.gain.setValueAtTime(0,t);
+  dep.gain.setValueAtTime(0,t+cfg.vt);dep.gain.linearRampToValueAtTime(cfg.vib,t+cfg.vt+.7);
+  lfo.connect(dep);
+  for(let i=0;i<cfg.n;i++){
+    const o=C.createOscillator();o.type='sawtooth';o.frequency.value=f;
+    // attack scoop/portamento up into the note
+    o.detune.setValueAtTime(-cfg.det*1.4,t);o.detune.linearRampToValueAtTime(0,t+.13);
+    dep.connect(o.detune);
+    const og=C.createGain();og.gain.value=(i%2?-.42:.42); // out-of-phase mix thins the chorus beat nicely
+    o.connect(og);og.connect(lp);o.start(t);o.stop(t+dur+.2)}
+  // bow noise: breath at the attack, then a faint sustained rasp
+  const bn=C.createBufferSource();bn.buffer=S.noise;bn.loop=true;
+  const bhp=C.createBiquadFilter();bhp.type='bandpass';bhp.frequency.value=Math.min(6500,f*4+900);bhp.Q.value=.7;
+  const bng=C.createGain();bng.gain.setValueAtTime(.0001,t);
+  bng.gain.exponentialRampToValueAtTime(vol*.12,t+.05);bng.gain.exponentialRampToValueAtTime(.0001,t+Math.min(dur,.9));
+  bn.connect(bhp);bhp.connect(bng);bng.connect(body);bn.start(t);bn.stop(t+dur+.2);
+  // amp envelope: slow bite attack, sustain, long release
+  const g=C.createGain();g.gain.setValueAtTime(.0001,t);
+  g.gain.exponentialRampToValueAtTime(vol,t+cfg.att);
+  g.gain.setValueAtTime(vol,t+Math.max(cfg.att+.2,dur*.72));
+  g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  body.connect(g);g.connect(S.master);
+  lfo.start(t);lfo.stop(t+dur+.2);
+}
+// 3-layer chamber string section: cello root, viola thirds-below, violin lead
+function sectionMel(t0,mel,vol,reg){for(const[bt,m,du]of mel)sw(m,t0+bt*BT,du*BT+.35,vol,reg)}
 // scene cues: each schedules its whole phrase on the audio clock (tight rhythm, seek-safe)
 function cueTitle(){ // main-title intro riff, Drop D slide - tab-verified (guitaretab/azchords)
   if(!S.ctx)return; const t0=S.ctx.currentTime+.05;
@@ -238,21 +260,28 @@ function lwaBed(t0,fadeAt){ // sparse guitar: Gm | Eb | Cm | D  (one bar each)
   for(let b=0;b<4;b++){const tb=t0+b*4*BT, sc=fadeAt?(fadeAt-(tb-t0)):99;
     const v=(sc<=0)?.0:(.30*(1-Math.max(0,Math.min(1,(tb+4*BT-t0-fadeAt))/1.6)));
     if(v<=.001)continue;
-    pluck(bars[b][0],v,tb,2.0);
-    for(let i=1;i<4;i++)pluck(bars[b][i],v*.55,tb+i*BT,1.6)}}
-function lwaMel(t0,fadeAt){ // descending G-minor lament (melody written to the cue's key/tempo/shape)
-  const mel=[[0,62,2.1],[3,58,.9],[4,60,1.1],[5.4,58,1.4],[7,55,2.6],[9.6,53,1.2],[10.9,55,1.0]];
-  for(const[bt,m,du]of mel){const tt=t0+bt*BT; if(fadeAt&&tt-t0>fadeAt)continue;
-    const fade=Math.max(.15,1-Math.max(0,(tt-t0-(fadeAt||99)))/1.6);
-    legato(m,tt,du*BT,.16*fade)}}
+    pluck(bars[b][0],v*.85,tb,2.0);
+    for(let i=1;i<4;i++)pluck(bars[b][i],v*.45,tb+i*BT,1.6)}}
+// lament melody + viola third-below harmony (G natural minor: G A Bb C D Eb F)
+const LAMENT=[[0,62,2.1],[3,58,.9],[4,60,1.1],[5.4,58,1.4],[7,55,2.6],[9.6,53,1.2],[10.9,55,1.0],[12.6,58,3.2]];
+// diatonic third-below in G minor, kept in viola register (D5->Bb4, Bb4->G4, etc.)
+const HARM=[[0,53,2.1],[3,50,.9],[4,51,1.1],[5.4,50,1.4],[7,48,2.6],[9.6,46,1.2],[10.9,48,1.0],[12.6,50,3.2]];
 function cueChase(){ if(!S.ctx)return; const t0=S.ctx.currentTime+.03;
-  lwaBed(t0,5.6); lwaMel(t0,5.6);   // fades to silence ~1.4s before arrival at t=37
-  pluck(43,.26,t0+7.2,1.2)}         // one last low G as they pull up (then ambience only)
-function cueEnd(){ // end card: reprise of the Heisenberg lament, whistle lead over Gm bed
+  lwaBed(t0,5.6);                                  // guitar bed, fades on arrival
+  sectionMel(t0,LAMENT.slice(0,5),.13,'violin');   // theme enters over the drive
+  sectionMel(t0,HARM.slice(0,5),.09,'viola');
+  sw(43,t0,3.4*BT,.10,'cello');                    // low G drone under bars 1-2
+  for(const d of [5.6]) sw(39,t0+d*BT,2.4*BT,.09,'cello');  // Eb under bar 3
+  pluck(43,.26,t0+7.2,1.2)}                        // last low G as they pull up
+function cueEnd(){ // end card: full Heisenberg-theme reprise on a real string section
   if(!S.ctx)return; const t0=S.ctx.currentTime+.03;
-  lwaBed(t0,0);
-  const mel=[[0,62,2.1],[3,58,.9],[4,60,1.1],[5.4,58,1.4],[7,55,2.6],[9.6,53,1.2],[10.9,55,1.0],[12.6,58,3.4]];
-  for(const[bt,m,du]of mel)whistle(m,t0+bt*BT,du*BT+.15,.15);
+  lwaBed(t0,0);                                    // guitar stays underneath
+  sw(31,t0,13.2*BT,.09,'cello');                   // sub G1 pedal
+  sw(43,t0,13.2*BT,.10,'cello');                   // G2 drone
+  sw(50,t0+4*BT,9.2*BT,.06,'cello');               // D3 lift
+  sectionMel(t0,HARM,.085,'viola');                // third-below harmony line
+  sectionMel(t0,LAMENT,.155,'violin');             // lead
+  for(const bt of [0,4,8,12])sw(50,t0+bt*BT,3.4*BT,.05,'viola'); // sustained D inner pulse
 }
 const CUES=[{t:0.35,f:cueTitle},{t:7.6,f:cueDesert},{t:17.05,f:cueLab},{t:29.05,f:cueChase},{t:58.0,f:cueEnd}];
 // scheduled one-shot events (deterministic; seek-safe via pointer)
