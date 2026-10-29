@@ -67,7 +67,7 @@ function mulberry(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a
 function off(w,h){const c=document.createElement('canvas');c.width=w;c.height=h;return c}
 
 /* ============ AUDIO (all synthesized) ============ */
-const S={ctx:null,master:null,windG:null,droneG:null,noise:null,ev:0,bub:{next:0},tick:{next:0},riser:null,lastWind:-1};
+const S={ctx:null,master:null,windG:null,droneG:null,noise:null,ev:0,bub:{next:0},tick:{next:0},riser:null,lastWind:-1,mu:0};
 function audioInit(){
   if(S.ctx) return;
   try{
@@ -90,6 +90,14 @@ function audioInit(){
     lfo.connect(lg);lg.connect(wf.frequency);lfo.start();
     ws.connect(wf);wf.connect(wg);wg.connect(S.master);ws.start();
     S.windG=wg;
+    // guitar bus + canyon echo (feedback delay -> lowpass -> back into delay)
+    S.gtr=C.createGain(); S.gtr.gain.value=1; S.gtr.connect(S.master);
+    S.dly=C.createDelay(1.0); S.dly.delayTime.value=.27;
+    S.fbk=C.createGain(); S.fbk.gain.value=.42;
+    S.dlp=C.createBiquadFilter(); S.dlp.type='lowpass'; S.dlp.frequency.value=2500;
+    S.wet=C.createGain(); S.wet.gain.value=.45;
+    S.gtr.connect(S.dly); S.dly.connect(S.dlp); S.dlp.connect(S.fbk); S.fbk.connect(S.dly);
+    S.dlp.connect(S.wet); S.wet.connect(S.master);
   }catch(e){window.__errs.push('audio:'+e.message)}
 }
 function env(g,t0,vol,att,dur){ // helper envelope
@@ -155,6 +163,58 @@ function whooshSound(){ if(!S.ctx)return;
   g.gain.exponentialRampToValueAtTime(.0001,t+.72);
   s.connect(f);f.connect(g);g.connect(S.master);s.start(t);s.stop(t+.8);
 }
+/* ---- spaghetti-western score: Karplus-Strong plucked guitar + echo + whistle ---- */
+function m2f(m){return 440*Math.pow(2,(m-69)/12)}
+const KSC={};
+function ksBuf(m){ if(KSC[m])return KSC[m];
+  const C=S.ctx,sr=C.sampleRate,f=m2f(m),n=Math.max(2,Math.round(sr/f)),len=Math.round(sr*3.0);
+  const b=C.createBuffer(1,len,sr),d=b.getChannelData(0),dl=new Float32Array(n);
+  for(let i=0;i<n;i++)dl[i]=Math.random()*2-1;
+  let prev=0;for(let i=0;i<n;i++){const v=dl[i];dl[i]=(v+prev)*.5;prev=v} // soften the pick
+  const k=.35,damp=.996; let lp=0;
+  for(let i=0;i<len;i++){const a=dl[i%n],c=dl[(i+1)%n];
+    lp=lp*(1-k)+(a+c)*.5*k*damp; dl[i%n]=lp; d[i]=lp}
+  for(let i=0;i<len;i++)d[i]*=Math.exp(-i/(sr*1.15));
+  KSC[m]=b;return b}
+function pluck(m,vol,when,dur){ if(!S.ctx||!S.gtr)return;
+  const C=S.ctx,t=when||C.currentTime,src=C.createBufferSource();
+  src.buffer=ksBuf(m);
+  const bp=C.createBiquadFilter();bp.type='peaking';bp.frequency.value=Math.max(90,Math.min(1600,m2f(m)*2.1));bp.Q.value=1.1;bp.gain.value=5;
+  const g=C.createGain();env(g,t,vol,.005,dur||1.6);
+  src.connect(bp);bp.connect(g);g.connect(S.gtr);
+  src.start(t);src.stop(t+(dur||1.6)+.1)}
+function whistle(m,when,dur,vol){ if(!S.ctx)return;
+  const C=S.ctx,t=when,f=m2f(m),o=C.createOscillator(),g=C.createGain(),
+  lfo=C.createOscillator(),lg=C.createGain();
+  o.type='sine';o.frequency.setValueAtTime(f*.93,t);o.frequency.exponentialRampToValueAtTime(f,t+.13);
+  lfo.frequency.value=5.4;lg.gain.value=f*.014;lfo.connect(lg);lg.connect(o.frequency);
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(vol,t+.1);
+  g.gain.setValueAtTime(vol,t+Math.max(.2,dur-.2));g.gain.exponentialRampToValueAtTime(.0001,t+dur);
+  o.connect(g);g.connect(S.master);o.start(t);lfo.start(t);o.stop(t+dur+.05);lfo.stop(t+dur+.05)}
+// scene cues: each schedules its whole phrase on the audio clock (tight rhythm, seek-safe)
+function cueDesert(){ if(!S.ctx)return; const t0=S.ctx.currentTime+.03;
+  const ch=[[40,52,55,59],[45,57,59,64],[43,55,59,62],[40,52,55,59]],st=[0,2.4,4.8,7.0];
+  for(let c=0;c<4;c++){pluck(ch[c][0],.34,t0+st[c],2.2);
+    for(let i=1;i<4;i++)pluck(ch[c][i],.19,t0+st[c]+i*.5,1.9)}
+  pluck(64,.24,t0+9.3,2.8)}
+function cueLab(){ if(!S.ctx)return; const t0=S.ctx.currentTime+.03;
+  for(const[d,m,v]of[[0,40,.38],[1.6,40,.28],[3.3,41,.32],[4.8,40,.28],[6.4,47,.22],[7.1,50,.2],[8.4,41,.26],[9.1,40,.32],[10.6,40,.24]])pluck(m,v,t0+d,1.6)}
+function cueChase(){ if(!S.ctx)return; const t0=S.ctx.currentTime+.03; let cur=.12,i=0;
+  while(cur<6.9){const step=cur<2.2?.175:(cur<4.6?.145:.118);
+    const m=(i%8===0)?52:(i%8===4)?47:40;
+    pluck(m,.10+.13*(cur/6.9)+(i%4===0?.05:0),t0+cur,.42);cur+=step;i++}
+  pluck(40,.4,t0+7.05,1.0);pluck(47,.28,t0+7.09,.9);pluck(52,.24,t0+7.13,.9)}
+function cueRiff(){ if(!S.ctx)return; const t0=S.ctx.currentTime+.03;
+  for(const[d,m,v]of[[0.8,52,.28],[1.15,52,.22],[1.7,59,.28],[2.45,55,.24],[3.15,52,.26],[3.9,40,.34],
+    [5.6,55,.26],[6.0,40,.4],[6.3,64,.26],[6.9,59,.24],[7.6,57,.22],[8.4,55,.28],
+    [9.6,52,.28],[9.95,52,.22],[10.5,59,.3],[11.2,55,.24],[11.9,52,.26],[12.6,40,.38]])pluck(m,v,t0+d,1.9);
+  for(let d=1.0;d<13;d+=.3)pluck(40,.07,t0+d,.5);   // low pulse under the scene
+  pluck(40,.46,t0+14.6,2.4);pluck(47,.3,t0+14.66,2.2);pluck(52,.26,t0+14.72,2.2); // 'goddamn right' strum
+  pluck(64,.22,t0+17.3,2.9)}
+function cueWhistle(){ if(!S.ctx)return; const t0=S.ctx.currentTime+.03;
+  for(const[d,m,v]of[[0,40,.28],[1.5,43,.22],[3.0,45,.22],[4.5,40,.3],[6.2,40,.24]])pluck(m,v,t0+d,2.2);
+  for(const[d,m,du]of[[0.3,64,.9],[1.3,67,.6],[2.0,69,.95],[3.05,67,.6],[3.8,64,1.3],[5.2,62,.7],[6.0,64,1.6]])whistle(m,t0+d,du,.15)}
+const CUES=[{t:7.05,f:cueDesert},{t:17.05,f:cueLab},{t:29.05,f:cueChase},{t:37.0,f:cueRiff},{t:58.0,f:cueWhistle}];
 // scheduled one-shot events (deterministic; seek-safe via pointer)
 const EVENTS=[
   {t:17.0,f:()=>thump(.4,62,36,.32)},{t:29.0,f:()=>thump(.32,60,38,.3)},
@@ -175,6 +235,7 @@ function audioFrame(t){
   if(t>=17&&t<29){if(t>=S.bub.next){bubbleSound();S.bub.next=t+.12+Math.random()*.3}}
   if(t>=29&&t<37){const r=.22+((t-29)/8)*.5;if(t>=S.tick.next){tickSound();S.tick.next=t+r*(0.7+Math.random()*.6)}}
   while(S.ev<EVENTS.length&&EVENTS[S.ev].t<=t){try{EVENTS[S.ev].f()}catch(e){}S.ev++}
+  while(S.mu<CUES.length&&CUES[S.mu].t<=t){try{CUES[S.mu].f()}catch(e){window.__errs.push('cue:'+e.message)}S.mu++}
 }
 
 /* ============ PRERENDERED PLATES ============ */
@@ -643,7 +704,7 @@ function stopAll(){
   $start.classList.remove('hidden');
 }
 function restart(){
-  S.ev=0;S.bub.next=0;S.tick.next=0;startOffset=0;
+  S.ev=0;S.mu=0;S.bub.next=0;S.tick.next=0;startOffset=0;
   begin();
 }
 document.getElementById('begin').addEventListener('click',begin);
@@ -653,6 +714,8 @@ requestAnimationFrame(loop);
 // verification seek mode: ?t=SECONDS auto-starts muted at that time
 if(SEEK!==null){startOffset=SEEK;S.ev=EVENTS.length;
   while(S.ev>0&&EVENTS[S.ev-1].t>SEEK)S.ev--;
+  S.mu=CUES.length;
+  while(S.mu>0&&CUES[S.mu-1].t>SEEK)S.mu--;
   begin()}
 </script>
 </body>
