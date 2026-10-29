@@ -145,10 +145,22 @@ function riserStop(){ if(!S.riser)return;
   try{S.riser.g.gain.cancelScheduledValues(S.ctx.currentTime);S.riser.g.gain.setTargetAtTime(0,S.ctx.currentTime,.05);
       S.riser.s.stop();S.riser.o.stop()}catch(e){} S.riser=null;
 }
+function whooshSound(){ if(!S.ctx)return;
+  const C=S.ctx,s=C.createBufferSource(),f=C.createBiquadFilter(),g=C.createGain(),t=C.currentTime;
+  s.buffer=S.noise;s.loop=true;f.type='bandpass';f.Q.value=.8;
+  f.frequency.setValueAtTime(240,t);f.frequency.exponentialRampToValueAtTime(2600,t+.28);
+  f.frequency.exponentialRampToValueAtTime(180,t+.62);
+  g.gain.setValueAtTime(.0001,t);g.gain.exponentialRampToValueAtTime(.5,t+.22);
+  g.gain.exponentialRampToValueAtTime(.0001,t+.72);
+  s.connect(f);f.connect(g);g.connect(S.master);s.start(t);s.stop(t+.8);
+}
 // scheduled one-shot events (deterministic; seek-safe via pointer)
 const EVENTS=[
-  {t:39.0,f:()=>thump(.30,50,40,.3)},{t:43.0,f:()=>thump(.30,50,40,.3)},
-  {t:47.5,f:()=>thump(.35,50,40,.3)},{t:51.6,f:()=>thump(.65,58,36,.45)},
+  {t:17.0,f:()=>thump(.4,62,36,.32)},{t:29.0,f:()=>thump(.32,60,38,.3)},
+  {t:36.2,f:whooshSound},{t:37.0,f:()=>thump(.45,55,32,.35)},
+  {t:39.0,f:()=>thump(.30,50,40,.3)},{t:43.0,f:()=>thump(.45,52,36,.35)},
+  {t:47.5,f:()=>thump(.35,50,40,.3)},{t:49.2,f:()=>noiseBurst(.25,5200,.07)},
+  {t:51.6,f:()=>thump(.75,62,32,.5)},{t:51.9,f:()=>thump(.3,48,30,.35)},
   {t:46.0,f:riserStart},{t:55.6,f:()=>{riserStop();impactSound()}},
   {t:56.4,f:ringSound},{t:58.0,f:padSound},
 ];
@@ -267,7 +279,7 @@ let GRAIN_PAT=null;
 /* ============ FIGURE / PROP DRAWING ============ */
 function drawFig(g,x,y,h,t,dir,hat,col,armFwd){
   g.save();g.translate(x,y);g.scale(dir,1);g.fillStyle=col;
-  const sw=REDUCED?0:Math.sin(t*1.7+x)*1.5, bd=(Math.sin(t*.8)+1)/2;
+  const sw=REDUCED?0:Math.sin(t*1.7+x)*1.5*(1+GUST), bd=(Math.sin(t*.8)+1)/2;
   // legs
   g.beginPath();
   g.moveTo(-h*.095,0);g.lineTo(-h*.028,0);g.lineTo(-h*.05,-h*.42);g.lineTo(-h*.115,-h*.42);g.closePath();
@@ -303,19 +315,25 @@ function drawFig(g,x,y,h,t,dir,hat,col,armFwd){
 /* ============ PARTICLES ============ */
 let P=[];
 function seedParticles(n,mk){P=[];for(let i=0;i<n;i++)P.push(mk(true))}
-function stepParticles(dt){for(const p of P){p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;if(p.life<=0&&p.respawn)Object.assign(p,p.mk())}}
+function stepParticles(dt){for(const p of P){p.x+=p.vx*dt;p.y+=p.vy*dt;p.life-=dt;if(p.life<=0&&p.respawn)Object.assign(p,p.mk())}P=P.filter(p=>p.life>0||p.respawn)}
 function drawParticles(g,fn){for(const p of P)if(p.life>0)fn(g,p)}
 
 /* ============ SCENE DRAWS ============ */
 function applyCam(z,cx,cy){
-  ctx.setTransform(z,0,0,z, W/2-cx*z+SH.x, H/2-cy*z+SH.y);
+  const wbx=REDUCED?0:Math.sin(TG*1.35)*2.2, wby=REDUCED?0:Math.cos(TG*.85+1.4)*1.8;
+  ctx.setTransform(z,0,0,z, W/2-cx*z+SH.x+wbx, H/2-cy*z+SH.y+wby);
 }
 const SH={x:0,y:0,amp:0};
-function shake(t){ if(REDUCED)return;
-  if(t>55.5&&t<56.2){const k=1-(t-55.5)/.7;SH.amp=14*k;
-    SH.x=(Math.random()*2-1)*SH.amp;SH.y=(Math.random()*2-1)*SH.amp;}
-  else{SH.amp=0;SH.x=0;SH.y=0}
+const KICKS=[[16.98,9,.4],[28.98,9,.4],[36.42,13,.5],[37.02,10,.35],
+  [43.0,12,.45],[49.2,7,.3],[51.6,16,.55],[55.5,14,.7]];
+function shake(t){ if(REDUCED){SH.amp=SH.x=SH.y=0;return}
+  let amp=0;
+  for(const[kt,a,d]of KICKS){ if(t>=kt&&t<kt+d)amp=Math.max(amp,a*(1-(t-kt)/d)) }
+  SH.amp=amp;
+  if(amp>0){SH.x=(Math.random()*2-1)*amp;SH.y=(Math.random()*2-1)*amp}
+  else{SH.x=SH.y=0}
 }
+let TG=0, GUST=0;
 function textOn(g,str,x,y,font,color,ls){
   g.save();g.font=font;g.fillStyle=color;g.textAlign='center';
   try{g.letterSpacing=ls||'6px'}catch(e){}
@@ -323,14 +341,17 @@ function textOn(g,str,x,y,font,color,ls){
   g.fillText(str,x,y);g.restore();
 }
 // S0 — cold open
+function flick(t0,dur){ if(REDUCED)return 1;
+  const d=performance.now()/1000-t0; if(d<0||d>dur)return 1;
+  return .45+.55*(Math.sin(d*62)>-.2?1:.35); }
 function scene0(tl){
   ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
   const n1=Math.floor(clamp(tl*16,0,19));
-  let a1=1; if(tl>5.6)a1=clamp((7-tl)/1.2,0,1);
+  let a1=flick(0,1.1); if(tl>5.6)a1=clamp((7-tl)/1.2,0,1);
   ctx.globalAlpha=a1;
   textOn(ctx,'ALBUQUERQUE COUNTY'.slice(0,n1),W/2,H*.46,`"28px 'Courier New', monospace"`,'#d9d2c2','8px');
   if(tl>2.2){const n2=Math.floor(clamp((tl-2.2)*14,0,7));
-    textOn(ctx,'5:47 AM'.slice(0,n2),W/2,H*.46+52,`"28px 'Courier New', monospace"`,'#8a8374','8px')}
+    ctx.globalAlpha=a1*flick(2.2,1.1); textOn(ctx,'5:47 AM'.slice(0,n2),W/2,H*.46+52,`"28px 'Courier New', monospace"`,'#8a8374','8px')}
   if(tl>4.6){ctx.globalAlpha=a1*clamp((tl-4.6)/1,0,1)*.8;
     textOn(ctx,'A FAN-MADE TRIBUTE',W/2,H*.58,'300 20px system-ui','#6e6a5c','5px')}
   ctx.globalAlpha=1;
@@ -338,15 +359,18 @@ function scene0(tl){
 // S1 — desert wide, push in on RV
 let birds;
 function scene1(p,tg){
-  const z=1+.38*ease(p),cx=W*.52,cy=H*.56;
+  const k2=Math.max(0,(p-.8)/.2);
+  const z=1+.38*ease(p)+.5*k2*k2, cx=W*.52+(W*.56-W*.52)*k2*k2, cy=H*.56-(H*.56-H*.62)*k2;
   applyCam(z,cx,cy);
   ctx.drawImage(desertC,0,0);
   // birds
-  if(!birds)birds=[{x:W*.3,y:H*.22,v:26},{x:W*.34,y:H*.24,v:22},{x:W*.32,y:H*.2,v:30}];
+  if(!birds)birds=[{x:W*.3,y:H*.22,v:34},{x:W*.34,y:H*.24,v:30},{x:W*.32,y:H*.2,v:38},
+    {x:W*.27,y:H*.26,v:28},{x:W*.36,y:H*.21,v:32},{x:W*.31,y:H*.19,v:26}];
   ctx.strokeStyle='rgba(70,40,20,.5)';ctx.lineWidth=2;
-  for(const b of birds){b.x+=b.v*.016;
-    ctx.beginPath();ctx.moveTo(b.x-9,b.y);ctx.quadraticCurveTo(b.x,b.y-6,b.x+9,b.y);
-    ctx.quadraticCurveTo(b.x,b.y-2,b.x-9,b.y);ctx.stroke();}
+  for(let i=0;i<birds.length;i++){const b=birds[i];b.x+=b.v*.016;
+    const fl=Math.sin(tg*11+i*2)*5;
+    ctx.beginPath();ctx.moveTo(b.x-9,b.y);ctx.quadraticCurveTo(b.x,b.y-6-fl,b.x+9,b.y);
+    ctx.quadraticCurveTo(b.x,b.y-2+fl*.4,b.x-9,b.y);ctx.stroke();}
   // RV with heat shimmer
   const s=.62,rx=W*.56-150*s,gy=H*.66+2,ry=gy-172*s;
   ctx.save();
@@ -364,10 +388,11 @@ function scene1(p,tg){
 function mkDust(){return{k:'dust',x:-20,y:H*(.66+Math.random()*.3),vx:26+Math.random()*44,vy:(Math.random()-.5)*8,life:3+Math.random()*5,s:.8+Math.random()*1.6}}
 // S2 — the lab
 function scene2(p,tg){
-  const z=1.1,cx=W*(.52+.012*ease(p)),cy=H*.62;
+  const z=1.02+.16*ease(p),cx=W*(.52+.012*ease(p)),cy=H*.62;
   applyCam(z,cx,cy);
   ctx.drawImage(labC,0,0);
-  const fl=(REDUCED?0:(Math.random()<.06?.5:.1))*(1+Math.sin(tg*13)*.5); // flicker
+  let fl=(REDUCED?0:(Math.random()<.06?.5:.1))*(1+Math.sin(tg*13)*.5); // flicker
+  if(p>.93)fl*=(Math.random()<.5?2.4:.25); // pre-cut brownout
   const lampA=.11+fl*.35;
   // lamp cone
   const lg=ctx.createLinearGradient(0,H*.14,0,H*.8);
@@ -383,8 +408,9 @@ function scene2(p,tg){
   // teal liquid glow (additive)
   const fl2=1+(REDUCED?0:Math.sin(tg*7)*.12+Math.random()*.06);
   ctx.globalCompositeOperation='lighter';
-  const tg2=ctx.createRadialGradient(W*.485,H*.76,10,W*.485,H*.76,240);
-  tg2.addColorStop(0,`rgba(47,212,168,${.20*fl2})`);tg2.addColorStop(1,'rgba(47,212,168,0)');
+  const flare=Math.exp(-Math.pow((p-.78)*9,2)); // teal flare pulse late in scene
+  const tg2=ctx.createRadialGradient(W*.485,H*.76,10,W*.485,H*.76,240+120*flare);
+  tg2.addColorStop(0,`rgba(47,212,168,${.20*fl2+.30*flare})`);tg2.addColorStop(1,'rgba(47,212,168,0)');
   ctx.fillStyle=tg2;ctx.fillRect(W*.28,H*.5,W*.42,H*.4);
   // liquid in flask
   ctx.fillStyle=`rgba(64,224,178,${.75*fl2})`;
@@ -404,46 +430,91 @@ function scene2(p,tg){
 }
 // S3 — headlights approach
 function scene3(p,tg){
-  const z=1.14,cx=W*.5,cy=H*.6;
+  GUST=0;
+  const z=1.14;
+  // pan: camera swings right as the car whooshes past (whip into the sunset scene)
+  let pan=0;
+  if(p>=.9){const q=(p-.9)/.1; pan=600*(q*q*(3-2*q));}
+  const cx=W*.5+pan,cy=H*.6;
   applyCam(z,cx,cy);
-  ctx.drawImage(duskC,0,0);
-  const e=ease(p),s=.3+1.35*Math.pow(e,1.5);
-  const x=W*.3+(s-.3)*46,y=H*.78;
+  ctx.drawImage(duskC,-pan*.25,0);  // parallax: bg drifts slower than cam
+  if(pan>40){ // sunset plate slides in from the right = the whip-pan reveal
+    const r=clamp((pan-40)/560,0,1);
+    ctx.save();ctx.globalAlpha=r;
+    ctx.drawImage(standC, W+(W*.55)*(1-r)-W*.55, -40, W*1.1, H+80);
+    for(let i=1;i<=3;i++){ctx.globalAlpha=r*.22/i;
+      ctx.drawImage(standC, W+(W*.55)*(1-r)-W*.55+i*70, -40, W*1.1, H+80)} // blur smear
+    ctx.restore();
+  }
+  const e=ease(p);
+  // car: approaches from far, then THUNDERS past camera
+  let s, x;
+  if(p<.72){ s=.3+1.1*Math.pow(p/.72,1.6); x=W*.42; }
+  else{ const q=(p-.72)/.28; s=1.4+3.4*q*q; x=W*.42+(W*.62)*q; }
+  const y=H*.78+(s>1.4?(s-1.4)*40:0);
   // approaching car: dark mass + headlight glows
+  const carVisible=p<.96;
+  if(carVisible){
   ctx.fillStyle='#05070a';
   ctx.beginPath();ctx.ellipse(x,y-26*s,120*s,34*s,0,0,7);ctx.fill();
   ctx.globalCompositeOperation='lighter';
+  const passBlow=p>.72?clamp((p-.72)/.12,0,1):0;
   for(const dx of[-42,42]){
     const lx=x+dx*s;
-    const gr=ctx.createRadialGradient(lx,y-8*s,2,lx,y-8*s,90*s);
-    gr.addColorStop(0,'rgba(255,246,215,.95)');gr.addColorStop(.25,'rgba(255,240,200,.4)');gr.addColorStop(1,'rgba(255,240,200,0)');
-    ctx.fillStyle=gr;ctx.beginPath();ctx.arc(lx,y-8*s,90*s,0,7);ctx.fill();
+    const R=Math.min((90+150*passBlow)*s,560);
+    const coreA=.95-.35*passBlow;
+    const gr=ctx.createRadialGradient(lx,y-8*s,2,lx,y-8*s,R);
+    gr.addColorStop(0,`rgba(255,246,215,${coreA})`);gr.addColorStop(.25,`rgba(255,240,200,${.4+.2*passBlow})`);gr.addColorStop(1,'rgba(255,240,200,0)');
+    ctx.fillStyle=gr;ctx.beginPath();ctx.arc(lx,y-8*s,R,0,7);ctx.fill();
     // beam cones toward camera
     ctx.fillStyle='rgba(255,244,205,.08)';
     ctx.beginPath();ctx.moveTo(lx,y-8*s);ctx.lineTo(lx-60*s,y+220*s);ctx.lineTo(lx+60*s,y+220*s);ctx.closePath();ctx.fill();
   }
+  // the moment of passage: horizontal streak smear
+  if(p>.75&&p<.92){const k=clamp((p-.75)/.06,0,1)*clamp((.92-p)/.08,0,1);
+    ctx.fillStyle=`rgba(255,238,196,${.18*k})`;ctx.fillRect(-W*.4,y-70*s,W*2.4,120*s)}
   ctx.globalCompositeOperation='source-over';
+  } // carVisible
   // kicked dust
-  if(P.length===0||P[0].k!=='hd')seedParticles(20,()=>({k:'hd',x:x+(Math.random()-.5)*160*s,y:y+(Math.random()-.5)*20,vx:-(60+Math.random()*80),vy:(Math.random()-.5)*30,life:.6+Math.random()*.9}));
+  if(P.length===0||P[0].k!=='hd')seedParticles(30,()=>({k:'hd',x:x+(Math.random()-.5)*160*s,y:y+(Math.random()-.5)*20,
+    vx:p>.72?-(160+Math.random()*320):-(60+Math.random()*80),vy:(Math.random()-.5)*30,life:.6+Math.random()*1.1}));
   ctx.fillStyle='rgba(200,180,140,.20)';
   drawParticles(ctx,(g,p)=>{g.globalAlpha=clamp(p.life,0,.25);g.beginPath();g.arc(p.x,p.y,2+Math.random()*2,0,7);g.fill()});
   stepParticles(1/60);
 }
 // S4 — the standoff
 function scene4(p,tg){
-  const z=1+1.0*Math.pow(ease(p),1.15); // 1.0 -> 2.0
+  const T=37+19*p;
+  // camera punches on the dialogue beats + slight reframe per line
+  let punch=0,ox=0;
+  if(T>=43&&T<44.1){const q=(T-43)/1.1;punch=.10*Math.sin(q*Math.PI);ox=30*Math.sin(q*Math.PI)}      // "Say my name": snap-in, pan B
+  if(T>=47.5&&T<49){const q=(T-47.5)/1.5;punch=.05*Math.sin(q*Math.PI);ox=-34*Math.sin(q*Math.PI)}    // "You're Heisenberg": pan A
+  if(T>=51.6){const q=clamp((T-51.6)/1.2,0,1);punch=.13*q;ox=0}                                       // "goddamn right": slow creep-in holds
+  const z=(1+1.0*Math.pow(ease(p),1.15))*(1+punch);
   const feet=H*.87;
-  const cx=W*.47,cy=H*(.62+.03*p);
+  const cx=W*.47+ox,cy=H*(.62+.03*p);
   applyCam(z,cx,cy);
+  // gusts whip the dust as tension rises
+  GUST=REDUCED?0:Math.max(0,(Math.sin(TG*.9)+Math.sin(TG*2.3+1)*.5)*.5)*(.5+.9*clamp((T-40)/14,0,1));
   ctx.drawImage(standC,0,0);
   // figures: rim on inner (sun-facing) edge then black
   const A={x:W*.335,dir:1,hat:true,h:440},B={x:W*.60,dir:-1,hat:false,h:412};
-  drawFig(ctx,A.x+A.dir*3.5,feet,A.h,tg,A.dir,A.hat,'#d96a35',false);
-  drawFig(ctx,B.x+B.dir*3.5,feet,B.h,tg,B.dir,B.hat,'#d96a35',false);
-  drawFig(ctx,A.x,feet,A.h,tg,A.dir,A.hat,'#0b0908',false);
-  drawFig(ctx,B.x,feet,B.h,tg,B.dir,B.hat,'#0b0908',false);
+  const drawT=clamp((T-51.6)/.5,0,1);          // pistol up at 'You're goddamn right'
+  const tilt=drawT>0? Math.sin(Math.min(1,(T-51.6)/.5)*Math.PI)*0.03 : 0;
+  for(const F of [A,B])for(const col of ['#d96a35','#0b0908']){
+    const off=col==='#d96a35'?F.dir*3.5:0;
+    ctx.save();
+    if(F===A&&drawT>0){ctx.translate(F.x+off,feet);ctx.rotate(-tilt*F.dir);ctx.translate(-(F.x+off),-feet)}
+    drawFig(ctx,F.x+off,feet,F.h,tg,F.dir,F.hat,col,(F===A&&drawT>0)?drawT:0);
+    if(F===A&&drawT>0){ // pistol in the raised hand
+      ctx.save();ctx.translate(F.x,feet);ctx.scale(F.dir,1);
+      const hy=-F.h*.78+F.h*.12, hx=F.h*.335;
+      ctx.fillStyle=col;ctx.fillRect(hx,hy,F.h*.085,F.h*.022);ctx.fillRect(hx+F.h*.055,hy+F.h*.02,F.h*.02,F.h*.035);
+      ctx.restore();}
+    ctx.restore();}
   // hard wind: streaming dust
-  if(P.length===0||P[0].k!=='wind')seedParticles(60,()=>({k:'wind',x:Math.random()*W,y:H*(.6+Math.random()*.3),vx:180+Math.random()*260,vy:(Math.random()-.5)*20,life:.4+Math.random()*.8}));
+  if(P.length===0||P[0].k!=='wind')seedParticles(70,()=>({k:'wind',x:Math.random()*W,y:H*(.55+Math.random()*.35),
+    vx:(180+Math.random()*260)*(1+GUST),vy:(Math.random()-.5)*20,life:.4+Math.random()*.8}));
   ctx.strokeStyle='rgba(255,196,130,.35)';ctx.lineWidth=1.2;
   drawParticles(ctx,(g,p)=>{g.globalAlpha=clamp(p.life*1.2,0,.4);
     g.beginPath();g.moveTo(p.x,p.y);g.lineTo(p.x-26,p.y-p.vy*.06);g.stroke()});
@@ -451,7 +522,9 @@ function scene4(p,tg){
 }
 // S5 — aftermath + title
 function scene5(tl,tg){
-  ctx.setTransform(1,0,0,1,0,0);ctx.fillStyle='#000';ctx.fillRect(0,0,W,H);
+  const zz=REDUCED?1:1+.07*clamp(tl/8.5,0,1); // slow push-in on the end card
+  ctx.setTransform(zz,0,0,zz,W/2-W/2*zz,H/2-H*.5*zz);
+  ctx.fillStyle='#000';ctx.fillRect(-W,-H,W*3,H*3);
   // slow dust motes
   if(P.length===0||P[0].k!=='mote')seedParticles(26,()=>({k:'mote',x:Math.random()*W,y:Math.random()*H,vx:(Math.random()-.5)*14,vy:(Math.random()-.5)*10,life:4+Math.random()*6}));
   ctx.fillStyle='rgba(200,190,160,.5)';
@@ -459,7 +532,7 @@ function scene5(tl,tg){
   stepParticles(1/60);ctx.globalAlpha=1;
   const ta=clamp((tl-2)/1.6,0,1); // title in at 58s
   if(ta>0){ctx.globalAlpha=ta;
-    textOn(ctx,'SAY MY NAME',W/2,H*.5,'400 150px Impact, Haettenschweiler, sans-serif','#a8c98a','30px');
+    textOn(ctx,'SAY MY NAME',W/2,H*.5,'400 150px Impact, Haettenschweiler, sans-serif','#a8c98a','30px'); // pushed by cam
     ctx.globalAlpha=ta*clamp((tl-4.5)/1.2,0,1);
     textOn(ctx,'A FAN-MADE TRIBUTE · IN THE STYLE OF BREAKING BAD',W/2,H*.5+70,'300 22px system-ui','#77745f','6px');
     ctx.globalAlpha=1;}
@@ -492,6 +565,13 @@ function draw(t){
   else if(t<37)scene3((t-29)/8,t);
   else if(t<55.68)scene4((t-37)/19,t);
   else scene5(t-56,t);
+  // 1-frame flash accents on the hard cuts (classic film-leader punch)
+  if(!REDUCED){
+    if(t>=7&&t<7.07){ctx.fillStyle='rgba(255,244,214,.30)';ctx.fillRect(0,0,W,H)}
+    if(t>=17&&t<17.07){ctx.fillStyle='rgba(120,235,200,.26)';ctx.fillRect(0,0,W,H)}
+    if(t>=29&&t<29.07){ctx.fillStyle='rgba(0,0,0,.6)';ctx.fillRect(0,0,W,H)}
+    if(t>=37&&t<37.08){ctx.fillStyle='rgba(255,180,110,.4)';ctx.fillRect(0,0,W,H)}
+  }
   // impact flash / hard cut
   ctx.setTransform(1,0,0,1,0,0);
   if(t>=55.5&&t<55.68){ctx.fillStyle='#fff';ctx.globalAlpha=1-(t-55.5)/.18;ctx.fillRect(0,0,W,H);ctx.globalAlpha=1}
@@ -517,6 +597,7 @@ let playing=false,t0=0,startOffset=0;
 function now(){return performance.now()}
 function loop(){
   const t=playing?(now()-t0)/1000+startOffset:startOffset;
+  TG=t;
   try{draw(t)}catch(e){window.__errs.push('draw:'+e.message)}
   audioFrame(t);
   $tc.textContent=String(Math.floor(t/60)).padStart(2,'0')+':'+String(Math.floor(t%60)).padStart(2,'0');
