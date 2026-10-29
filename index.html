@@ -486,9 +486,12 @@ function scene4(p,tg){
   const T=37+19*p;
   // camera punches on the dialogue beats + slight reframe per line
   let punch=0,ox=0;
-  if(T>=43&&T<44.1){const q=(T-43)/1.1;punch=.10*Math.sin(q*Math.PI);ox=30*Math.sin(q*Math.PI)}      // "Say my name": snap-in, pan B
-  if(T>=47.5&&T<49){const q=(T-47.5)/1.5;punch=.05*Math.sin(q*Math.PI);ox=-34*Math.sin(q*Math.PI)}    // "You're Heisenberg": pan A
-  if(T>=51.6){const q=clamp((T-51.6)/1.2,0,1);punch=.13*q;ox=0}                                       // "goddamn right": slow creep-in holds
+  // A = HATTED = Heisenberg (left, x=.335W); B = unhatted (right, x=.60W). ox shifts cam center to key the speaker.
+  // centering A needs ox≈-259, centering B needs ox≈+250 (relative to the midway base .47W).
+  if(T>=39&&T<40.8){const q=(T-39)/1.8;punch=.05*Math.sin(q*Math.PI);ox=-150*Math.sin(q*Math.PI)}    // "You know who I am" (A): favor Heisenberg
+  if(T>=43&&T<44.4){const q=(T-43)/1.4;const s=Math.sin(q*Math.PI);punch=.11*s;ox=-210*s}            // "Say my name" (A): push in on HEISENBERG
+  if(T>=47.5&&T<49){const q=(T-47.5)/1.5;const s=Math.sin(q*Math.PI);punch=.04*s;ox=180*s}           // "...You're Heisenberg" (B): reaction shot, key on B
+  if(T>=51.6){const q=clamp((T-51.6)/1.4,0,1);punch=.16*q;ox=-230*q}                                 // "goddamn right" (A): hold tight on HEISENBERG + gun
   const z=(1+1.0*Math.pow(ease(p),1.15))*(1+punch);
   const feet=H*.87;
   const cx=W*.47+ox,cy=H*(.62+.03*p);
@@ -594,8 +597,6 @@ function draw(t){
       ctx.beginPath();ctx.arc(bcx,bcy,R,0,7);ctx.stroke()}
     ctx.restore();
   }
-  // letterbox
-  ctx.fillStyle='#000';ctx.fillRect(0,0,W,H*.093);ctx.fillRect(0,H*.907,W,H*.093);
   drawCaptions(t);
   // grain (full-frame repeating pattern, no visible tile edges)
   if(!GRAIN_PAT)GRAIN_PAT=ctx.createPattern(grain[0],'repeat');
@@ -608,6 +609,9 @@ function draw(t){
     const sx=Math.random()*W;ctx.moveTo(sx,0);ctx.lineTo(sx+20,H);ctx.stroke()}
   // vignette
   ctx.drawImage(vigC,0,0);
+  // letterbox painted LAST -> grain/scratch/blast never touch the bars (no bar flicker)
+  ctx.setTransform(1,0,0,1,0,0);ctx.globalAlpha=1;
+  ctx.fillStyle='#000';ctx.fillRect(0,0,W,H*.093);ctx.fillRect(0,H*.907,W,H*.093);
 }
 
 /* ============ MAIN LOOP / CONTROL ============ */
